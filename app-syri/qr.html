@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>app syri — Generador de QR</title>
+  <style>
+    :root{ --blue:#1e3a8a; --muted:#64748b; }
+    body{font-family:system-ui,Segoe UI,Roboto,Inter,Arial,sans-serif;margin:0;padding:24px;background:#ffffff;color:#0f172a}
+    h1{margin:0 0 16px 0;color:var(--blue)}
+    .wrap{max-width:720px;margin:0 auto}
+    .card{border:1px solid #c7d2fe;border-radius:16px;padding:16px;background:#ecf2ff}
+    label{font-weight:600;display:block;margin-bottom:8px}
+    input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #cbd5e1;font-size:16px}
+    .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+    button{cursor:pointer;border-radius:10px;padding:10px 14px;border:1px solid #cbd5e1;background:#e6efff;font-weight:700}
+    button:active{transform:scale(.98)}
+    canvas{background:#fff;border:1px solid #e2e8f0;border-radius:12px}
+    .note{color:var(--muted);font-size:14px;margin-top:10px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>app syri — Generador de QR</h1>
+  <div class="card">
+    <label for="url">Pega aquí la URL pública (HTTPS) de tu app</label>
+    <input id="url" type="text" placeholder="https://tudominio.netlify.app/" />
+    <div class="row">
+      <button id="btnGen">Generar QR</button>
+      <button id="btnDL" disabled>Descargar PNG</button>
+      <button id="btnOpen" disabled>Abrir URL</button>
+    </div>
+    <div class="note">Tip: puedes abrir esta página como <code>qr.html?url=...</code> para generar automáticamente.</div>
+  </div>
+
+  <div style="margin-top:20px">
+    <canvas id="qrcanvas" width="540" height="540" style="width:100%;max-width:420px;height:auto;"></canvas>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+<script>
+const $ = (s)=>document.querySelector(s);
+const input = $('#url');
+const canvas = $('#qrcanvas');
+const btnGen = $('#btnGen');
+const btnDL = $('#btnDL');
+const btnOpen = $('#btnOpen');
+
+function generate(url){
+  if(!url || !/^https?:\\/\\//i.test(url)){ alert('Introduce una URL válida (http/https).'); return; }
+  QRCode.toCanvas(canvas, url, {errorCorrectionLevel:'H', margin:2, scale:8}, (err)=>{
+    if(err){ alert('No se pudo generar el QR'); console.error(err); return; }
+    btnDL.disabled = false; btnOpen.disabled=false;
+    const u = new URL(location.href);
+    u.searchParams.set('url', url);
+    history.replaceState(null, '', u.toString());
+  });
+}
+
+btnGen.addEventListener('click', ()=>generate(input.value.trim()));
+btnDL.addEventListener('click', ()=>{
+  const a = document.createElement('a');
+  a.download = 'app-syri-qr.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+});
+btnOpen.addEventListener('click', ()=>{
+  const url = input.value.trim();
+  if(url) window.open(url, '_blank');
+});
+
+const params = new URLSearchParams(location.search);
+if(params.has('url')){
+  input.value = params.get('url');
+  generate(input.value.trim());
+}
+</script>
+</body>
+</html>
