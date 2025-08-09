@@ -155,7 +155,8 @@
               'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
           },
           runningMode: 'VIDEO',
-          numFaces: 1
+          numFaces: 1,
+          outputFaceBlendshapes: true
         });
         modelsReady = true;
         toast.textContent = 'Modelos listos. Pulsa “Iniciar cámara”.';
@@ -236,7 +237,14 @@
     // ==============================
     // Bucle principal de detección y dibujo
     // ==============================
-    let smileRatioEMA = null;
+      // Suavizadores de expresiones faciales
+      let smileEMA = null;
+      let mouthOpenEMA = null;
+      let eyeLeftEMA = null;
+      let eyeRightEMA = null;
+      let frownEMA = null;
+      let browDownEMA = null;
+      let browUpEMA = null;
 
     async function loop(){
       if (!running || !video.videoWidth) { if (running) requestAnimationFrame(loop); return; }
@@ -307,25 +315,58 @@
         }
       }
 
-      // 2) Cara -> sonrisa/serio (emoji)
-      try{
-        const faceRes = await faceLandmarker.detectForVideo(video, nowMs);
-        if (faceRes && faceRes.faceLandmarks && faceRes.faceLandmarks[0]){
-          const f = faceRes.faceLandmarks[0];
-          const L = f[61], R = f[291]; // comisuras
-          const U = f[13], D = f[14];  // labio sup/inf (interior)
-          const width = distPx(L,R,W,H);
-          const height = Math.max(1, distPx(U,D,W,H));
-          const ratio = width/height; // más alto => más sonrisa
-          smileRatioEMA = ema(smileRatioEMA, ratio, 0.25);
+        // 2) Cara -> emoción (emoji)
+        try{
+          const faceRes = await faceLandmarker.detectForVideo(video, nowMs);
+          const blend = faceRes?.faceBlendshapes?.[0]?.categories || [];
+          if (blend.length){
+            const bs = {};
+            for (const c of blend){ bs[c.categoryName] = c.score; }
 
-          // Umbral empírico; ajustable si hay falsos positivos
-          const smiling = smileRatioEMA !== null && smileRatioEMA > 1.9;
-          emojiEl.textContent = smiling ? '😀' : '😐';
-        } else {
-          emojiEl.textContent = '😐';
-        }
-      }catch(e){ /* silencioso */ }
+            const smile = ((bs.mouthSmileLeft || 0) + (bs.mouthSmileRight || 0)) / 2;
+            const mouth = bs.jawOpen || bs.mouthOpen || 0;
+            const blinkL = bs.eyeBlinkLeft || 0;
+            const blinkR = bs.eyeBlinkRight || 0;
+            const frown = ((bs.mouthFrownLeft || 0) + (bs.mouthFrownRight || 0)) / 2;
+            const browDown = ((bs.browDownLeft || 0) + (bs.browDownRight || 0)) / 2;
+            const browUp = ((bs.browOuterUpLeft || 0) + (bs.browOuterUpRight || 0)) / 2;
+
+            smileEMA = ema(smileEMA, smile, 0.25);
+            mouthOpenEMA = ema(mouthOpenEMA, mouth, 0.25);
+            eyeLeftEMA = ema(eyeLeftEMA, blinkL, 0.25);
+            eyeRightEMA = ema(eyeRightEMA, blinkR, 0.25);
+            frownEMA = ema(frownEMA, frown, 0.25);
+            browDownEMA = ema(browDownEMA, browDown, 0.25);
+            browUpEMA = ema(browUpEMA, browUp, 0.25);
+
+            const bothClosed = eyeLeftEMA > 0.6 && eyeRightEMA > 0.6;
+            const wink = (eyeLeftEMA > 0.6 && eyeRightEMA < 0.3) || (eyeRightEMA > 0.6 && eyeLeftEMA < 0.3);
+
+            let emoji = '😐';
+            if (bothClosed) {
+              emoji = smileEMA > 0.5 ? '😆' : '😴';
+            } else if (wink) {
+              emoji = '😉';
+            } else if (mouthOpenEMA > 0.7 && browUpEMA > 0.4) {
+              emoji = '😱';
+            } else if (mouthOpenEMA > 0.5) {
+              emoji = '😮';
+            } else if (smileEMA > 0.7) {
+              emoji = '😄';
+            } else if (smileEMA > 0.4) {
+              emoji = '😀';
+            } else if (smileEMA > 0.2) {
+              emoji = '🙂';
+            } else if (frownEMA > 0.4 || browDownEMA > 0.4) {
+              emoji = '☹️';
+            } else if (frownEMA > 0.25) {
+              emoji = '😢';
+            }
+            emojiEl.textContent = emoji;
+          } else {
+            emojiEl.textContent = '😐';
+          }
+        }catch(e){ /* silencioso */ }
 
       // Badge de estado
       badge.textContent = `Mano: ${sawHand? '✔' : '—'} | Pinch: ${sawHand? (pinch? '✔' : '✖'): '—'} | Dibujando: ${isDrawing? '✔' : '✖'}`;
