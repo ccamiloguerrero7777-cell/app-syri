@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>app syri — Pinta con tus dedos</title>
+  <meta name="theme-color" content="#1e3a8a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    :root{
+      /* Paleta app syri: azul, blanco, verde */
+      --bg:#ffffff; --panel:#ecf2ff; --text:#0f172a; --muted:#475569; --accent:#2563eb; 
+      --danger:#ef4444; --ok:#22c55e; --stroke:#c7d2fe;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica,Arial,sans-serif}
+    .brand{font-weight:800; letter-spacing:.3px; color:#1e3a8a}
+    .app{display:flex;flex-direction:column;gap:.75rem;height:100%;padding:12px;max-width:1080px;margin:0 auto}
+    .controls{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;justify-content:center;background:var(--panel);border:1px solid var(--stroke);border-radius:16px;padding:10px}
+    button{background:#e6efff;border:1px solid var(--stroke);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600;transition:transform .08s ease, background .2s ease;min-width:160px}
+    button:hover{background:#dce8ff}
+    button:active{transform:scale(.98)}
+    button[disabled]{opacity:.5;cursor:not-allowed}
+    .pill{font-size:12px;opacity:.85;color:var(--muted)}
+    .stage{position:relative;flex:1;min-height:320px;border:1px solid var(--stroke);border-radius:16px;overflow:hidden;background:#f8fafc}
+    video,.layer{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+    /* Vista espejo para que se vea natural en cámara frontal */
+    video, .mirror { transform: scaleX(-1);} 
+    .emoji{position:absolute;right:12px;top:12px;font-size:42px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.2));z-index:6}
+    .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);background:rgba(30,58,138,.92);padding:8px 12px;border:1px solid #93c5fd;border-radius:10px;font-size:13px;color:#fff;z-index:7}
+    .badge{position:absolute;left:12px;bottom:12px;z-index:6;background:rgba(236,242,255,.95);border:1px solid var(--stroke);border-radius:10px;padding:6px 10px;font-size:12px;color:var(--muted)}
+    .hint{max-width:920px;margin:0 auto 6px auto;line-height:1.4;color:var(--muted);font-size:13px}
+    code{background:#eef2ff;padding:2px 6px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="hint" id="securityHint"><span class="brand">app syri</span> — Consejo: Para que la cámara funcione en la mayoría de navegadores, abre este archivo sobre <b>https://</b> o en <b>http://localhost</b>. En <code>file://</code> o <b>http</b> en dominios, el acceso a cámara suele bloquearse por seguridad.</div>
+
+    <div class="controls">
+      <button id="btnToggleCamera">🎥 Iniciar cámara</button>
+      <button id="btnThickness">🖌️ Grosor: <span id="thickLabel">8</span> px</button>
+      <button id="btnColor">🎨 Color: <span id="colorLabel">Azul</span></button>
+      <button id="btnMode">✋ Modo: <span id="modeLabel">Pinch (alternar)</span></button>
+      <button id="btnClear">🧹 Borrar dibujo</button>
+    </div>
+
+    <div class="stage" id="stage">
+      <video id="video" class="mirror" autoplay playsinline muted></video>
+      <canvas id="drawCanvas" class="layer mirror"></canvas>
+      <canvas id="fxCanvas" class="layer mirror" style="pointer-events:none"></canvas>
+      <div class="emoji" id="emoji">😐</div>
+      <div class="toast" id="statusToast">Cargando modelos…</div>
+      <div class="badge" id="badge">Mano: — | Pinch: — | Dibujando: —</div>
+    </div>
+  </div>
+
+  <script>
+    // Registrar Service Worker para PWA
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(console.error);
+      });
+    }
+  </script>
+
+  <script type="module">
+    // ==============================
+    // Utilidades
+    // ==============================
+    const $ = (sel) => document.querySelector(sel);
+    const video = $('#video');
+    const drawCanvas = $('#drawCanvas');
+    const fxCanvas = $('#fxCanvas');
+    const drawCtx = drawCanvas.getContext('2d');
+    const fxCtx = fxCanvas.getContext('2d');
+    const btnToggle = $('#btnToggleCamera');
+    const btnThickness = $('#btnThickness');
+    const btnColor = $('#btnColor');
+    const btnMode = $('#btnMode');
+    const btnClear = $('#btnClear');
+    const thickLabel = $('#thickLabel');
+    const colorLabel = $('#colorLabel');
+    const modeLabel = $('#modeLabel');
+    const emojiEl = $('#emoji');
+    const toast = $('#statusToast');
+    const badge = $('#badge');
+
+    // Seguridad / contexto (https vs file://)
+    const isLocalhost = /(^localhost$)|(^127\\.0\\.0\\.1$)/.test(location.hostname);
+    const securityOK = (location.protocol === 'https:' || isLocalhost);
+    if (!securityOK) {
+      $('#securityHint').style.color = '#1e3a8a';
+      $('#securityHint').innerHTML = '⚠️ <b>Importante:</b> Este navegador puede <b>bloquear</b> la cámara en <code>' + location.protocol + '</code>. Si falla, sirve el archivo en <b>https://</b> o ejecuta un servidor local (<b>http://localhost</b>).';
+    }
+
+    // Estado de dibujo
+    const THICKNESS_OPTIONS = [4, 8, 12, 20, 30];
+    let thicknessIndex = 1; // 8 px
+    let colorIndex = 0;
+    const COLORS = [
+      ['#1d4ed8','Azul'], ['#22c55e','Verde'], ['#111827','Negro'], ['#ef4444','Rojo'], ['#06b6d4','Cian'], ['#000000','Negro']
+    ];
+    let drawColor = COLORS[colorIndex][0];
+    let mode = 'pinch'; // 'pinch' | 'seguir'
+    let isDrawing = false; // estado actual
+    let wasPinching = false; // para detectar flanco
+    let lastPoint = null; // último punto de trazo
+
+    // Detección
+    let running = false;
+    let handLandmarker, faceLandmarker, vision;
+
+    // FPS/tiempos
+    let lastVideoTime = -1;
+
+    function resizeCanvases(){
+      const rect = $('#stage').getBoundingClientRect();
+      [drawCanvas, fxCanvas].forEach(c => { c.width = rect.width; c.height = rect.height; });
+    }
+    window.addEventListener('resize', resizeCanvases);
+
+    // Distancia euclídea entre landmarks normalizados (0..1), escalada a píxeles del canvas
+    function distPx(a,b, W, H){ const dx = (a.x - b.x)*W; const dy = (a.y - b.y)*H; return Math.hypot(dx,dy); }
+
+    // Mapear coord normalizada a pixeles (invirtiendo X por vista espejo)
+    function toCanvasPoint(lm, W, H){ return { x: W - (lm.x * W), y: lm.y * H } }
+
+    // Suavizado simple (EMA)
+    function ema(prev, next, alpha=0.2){ return prev===null? next : (prev*(1-alpha) + next*alpha); }
+
+    // ==============================
+    // Carga de modelos MediaPipe Tasks
+    // ==============================
+    let modelsReady = false;
+    async function loadModels(){
+      try{
+        toast.style.display = 'block';
+        toast.textContent = 'Cargando modelos…';
+        const {FilesetResolver, HandLandmarker, FaceLandmarker} = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10');
+        vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10/wasm'
+        );
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+          },
+          runningMode: 'VIDEO',
+          numHands: 1
+        });
+        faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1
+        });
+        modelsReady = true;
+        toast.textContent = 'Modelos listos. Pulsa “Iniciar cámara”.';
+      }catch(err){
+        console.error(err);
+        toast.textContent = 'Error cargando modelos. Revisa tu conexión.';
+      }
+    }
+    loadModels();
+
+    // ==============================
+    // Cámara
+    // ==============================
+    let stream = null;
+    async function startCamera(){
+      if (!modelsReady){ toast.textContent = 'Aún cargando modelos…'; return; }
+      try{
+        const constraints = { video: { facingMode: 'user', width: {ideal: 1280}, height: {ideal: 720} }, audio:false };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await video.play();
+        resizeCanvases();
+        drawCtx.lineCap = 'round';
+        drawCtx.lineJoin = 'round';
+        drawCtx.strokeStyle = drawColor;
+        drawCtx.lineWidth = THICKNESS_OPTIONS[thicknessIndex];
+        running = true;
+        btnToggle.textContent = '⏹️ Detener cámara';
+        toast.textContent = 'Cámara activa';
+        requestAnimationFrame(loop);
+      }catch(err){
+        console.error(err);
+        toast.textContent = 'No se pudo iniciar la cámara. Permisos o contexto inseguro.';
+      }
+    }
+
+    function stopCamera(){
+      running = false;
+      if (stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+      video.srcObject = null;
+      btnToggle.textContent = '🎥 Iniciar cámara';
+      toast.textContent = 'Cámara detenida';
+    }
+
+    btnToggle.addEventListener('click', ()=>{ running ? stopCamera() : startCamera(); });
+
+    // ==============================
+    // Controles
+    // ==============================
+    btnThickness.addEventListener('click', ()=>{
+      thicknessIndex = (thicknessIndex + 1) % THICKNESS_OPTIONS.length;
+      const t = THICKNESS_OPTIONS[thicknessIndex];
+      thickLabel.textContent = String(t);
+      drawCtx.lineWidth = t;
+    });
+
+    btnColor.addEventListener('click', ()=>{
+      colorIndex = (colorIndex + 1) % COLORS.length;
+      let name;
+      [drawColor, name] = COLORS[colorIndex];
+      drawCtx.strokeStyle = drawColor;
+      colorLabel.textContent = name;
+    });
+
+    btnMode.addEventListener('click', ()=>{
+      mode = (mode === 'pinch') ? 'seguir' : 'pinch';
+      modeLabel.textContent = (mode === 'pinch') ? 'Pinch (alternar)' : 'Seguir dedo (continuo)';
+      // Reiniciar estados de dibujo al cambiar
+      isDrawing = false; wasPinching = false; lastPoint = null;
+    });
+
+    btnClear.addEventListener('click', ()=>{
+      drawCtx.clearRect(0,0,drawCanvas.width, drawCanvas.height);
+    });
+
+    document.addEventListener('visibilitychange', ()=>{ if (document.hidden && running) stopCamera(); });
+
+    // ==============================
+    // Bucle principal de detección y dibujo
+    // ==============================
+    let smileRatioEMA = null;
+
+    async function loop(){
+      if (!running || !video.videoWidth) { if (running) requestAnimationFrame(loop); return; }
+      const W = drawCanvas.width, H = drawCanvas.height;
+
+      // Borra capa FX (cursor, ayudas)
+      fxCtx.clearRect(0,0,W,H);
+
+      const nowMs = performance.now();
+      if (lastVideoTime === video.currentTime){ requestAnimationFrame(loop); return; }
+      lastVideoTime = video.currentTime;
+
+      // 1) Manos
+      let pinch = false; let indexPt = null; let handSizePx = null; let sawHand = false;
+      try{
+        const handRes = await handLandmarker.detectForVideo(video, nowMs);
+        if (handRes && handRes.landmarks && handRes.landmarks[0]){
+          const lm = handRes.landmarks[0];
+          sawHand = true;
+          const thumbTip = lm[4];
+          const indexTip = lm[8];
+          // tamaño de mano ~ distancia muñeca (0) a nudillo medio (9)
+          handSizePx = distPx(lm[0], lm[9], W, H);
+          const pinchDist = distPx(thumbTip, indexTip, W, H);
+          pinch = (pinchDist < Math.max(8, handSizePx * 0.12));
+          indexPt = toCanvasPoint(indexTip, W, H);
+
+          // dibujar cursor en capa FX
+          fxCtx.beginPath();
+          fxCtx.arc(indexPt.x, indexPt.y, 6, 0, Math.PI*2);
+          fxCtx.fillStyle = drawColor;
+          fxCtx.fill();
+          fxCtx.beginPath();
+          fxCtx.arc(indexPt.x, indexPt.y, pinch? 14:10, 0, Math.PI*2);
+          fxCtx.strokeStyle = pinch? '#22c55e' : '#94a3b8';
+          fxCtx.lineWidth = 2;
+          fxCtx.stroke();
+        }
+      }catch(e){ /* silencioso */ }
+
+      // Lógica de modos
+      if (mode === 'pinch'){
+        if (sawHand){
+          if (pinch && !wasPinching){
+            // flanco ascendente => alternar dibujar
+            isDrawing = !isDrawing;
+            lastPoint = null; // evita salto
+            wasPinching = true;
+          } else if (!pinch){
+            wasPinching = false;
+          }
+        }
+      } else { // seguir
+        isDrawing = sawHand; // dibuja mientras vea la mano
+        if (!sawHand) lastPoint = null;
+      }
+
+      // Trazo
+      if (isDrawing && indexPt){
+        if (!lastPoint) {
+          lastPoint = {...indexPt};
+        } else {
+          drawCtx.beginPath();
+          drawCtx.moveTo(lastPoint.x, lastPoint.y);
+          drawCtx.lineTo(indexPt.x, indexPt.y);
+          drawCtx.stroke();
+          lastPoint = {...indexPt};
+        }
+      }
+
+      // 2) Cara -> sonrisa/serio (emoji)
+      try{
+        const faceRes = await faceLandmarker.detectForVideo(video, nowMs);
+        if (faceRes && faceRes.faceLandmarks && faceRes.faceLandmarks[0]){
+          const f = faceRes.faceLandmarks[0];
+          const L = f[61], R = f[291]; // comisuras
+          const U = f[13], D = f[14];  // labio sup/inf (interior)
+          const width = distPx(L,R,W,H);
+          const height = Math.max(1, distPx(U,D,W,H));
+          const ratio = width/height; // más alto => más sonrisa
+          smileRatioEMA = ema(smileRatioEMA, ratio, 0.25);
+
+          // Umbral empírico; ajustable si hay falsos positivos
+          const smiling = smileRatioEMA !== null && smileRatioEMA > 1.9;
+          emojiEl.textContent = smiling ? '😀' : '😐';
+        } else {
+          emojiEl.textContent = '😐';
+        }
+      }catch(e){ /* silencioso */ }
+
+      // Badge de estado
+      badge.textContent = `Mano: ${sawHand? '✔' : '—'} | Pinch: ${sawHand? (pinch? '✔' : '✖'): '—'} | Dibujando: ${isDrawing? '✔' : '✖'}`;
+
+      requestAnimationFrame(loop);
+    }
+
+    // Tamaño inicial
+    resizeCanvases();
+
+    // Mensaje rápido si el navegador no soporta mediaDevices
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      toast.textContent = 'Tu navegador no soporta getUserMedia.';
+      btnToggle.disabled = true;
+    }
+  </script>
+</body>
+</html>
