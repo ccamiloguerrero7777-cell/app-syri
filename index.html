@@ -236,7 +236,10 @@
     // ==============================
     // Bucle principal de detección y dibujo
     // ==============================
-    let smileRatioEMA = null;
+      let smileRatioEMA = null;
+      let mouthOpenEMA = null;
+      let eyeLeftEMA = null;
+      let eyeRightEMA = null;
 
     async function loop(){
       if (!running || !video.videoWidth) { if (running) requestAnimationFrame(loop); return; }
@@ -307,7 +310,7 @@
         }
       }
 
-      // 2) Cara -> sonrisa/serio (emoji)
+      // 2) Cara -> emoción (emoji)
       try{
         const faceRes = await faceLandmarker.detectForVideo(video, nowMs);
         if (faceRes && faceRes.faceLandmarks && faceRes.faceLandmarks[0]){
@@ -316,12 +319,54 @@
           const U = f[13], D = f[14];  // labio sup/inf (interior)
           const width = distPx(L,R,W,H);
           const height = Math.max(1, distPx(U,D,W,H));
-          const ratio = width/height; // más alto => más sonrisa
-          smileRatioEMA = ema(smileRatioEMA, ratio, 0.25);
+          const smileRatio = width/height; // más alto => más sonrisa
+          const openRatio = height/width;  // más alto => boca abierta
 
-          // Umbral empírico; ajustable si hay falsos positivos
-          const smiling = smileRatioEMA !== null && smileRatioEMA > 1.9;
-          emojiEl.textContent = smiling ? '😀' : '😐';
+          // ojos
+          const faceW = distPx(f[33], f[263], W, H);
+          const eyeL = distPx(f[159], f[145], W, H);
+          const eyeR = distPx(f[386], f[374], W, H);
+          const eyeLRatio = eyeL/faceW;
+          const eyeRRatio = eyeR/faceW;
+
+          smileRatioEMA = ema(smileRatioEMA, smileRatio, 0.25);
+          mouthOpenEMA = ema(mouthOpenEMA, openRatio, 0.25);
+          eyeLeftEMA = ema(eyeLeftEMA, eyeLRatio, 0.25);
+          eyeRightEMA = ema(eyeRightEMA, eyeRRatio, 0.25);
+
+          // Determinar emoción según heurísticas simples
+          let emoji = '😐';
+          const closedThreshold = 0.018;
+          const leftClosed = eyeLeftEMA !== null && eyeLeftEMA < closedThreshold;
+          const rightClosed = eyeRightEMA !== null && eyeRightEMA < closedThreshold;
+          const bothClosed = leftClosed && rightClosed;
+          const wink = (leftClosed && !rightClosed) || (rightClosed && !leftClosed);
+          const avgEye = (eyeLeftEMA !== null && eyeRightEMA !== null) ? (eyeLeftEMA + eyeRightEMA)/2 : null;
+
+          if (bothClosed) {
+            if (smileRatioEMA !== null && smileRatioEMA > 1.9) {
+              emoji = '😆';
+            } else {
+              emoji = '😴';
+            }
+          } else if (wink) {
+            emoji = '😉';
+          } else if (mouthOpenEMA !== null && mouthOpenEMA > 0.9 && avgEye !== null && avgEye > 0.06) {
+            emoji = '😱';
+          } else if (mouthOpenEMA !== null && mouthOpenEMA > 0.6) {
+            emoji = '😮';
+          } else if (smileRatioEMA !== null && smileRatioEMA > 2.3) {
+            emoji = '😄';
+          } else if (smileRatioEMA !== null && smileRatioEMA > 1.9) {
+            emoji = '😀';
+          } else if (smileRatioEMA !== null && smileRatioEMA > 1.6) {
+            emoji = '🙂';
+          } else if (smileRatioEMA !== null && smileRatioEMA < 1.1) {
+            emoji = '😢';
+          } else if (smileRatioEMA !== null && smileRatioEMA < 1.3) {
+            emoji = '☹️';
+          }
+          emojiEl.textContent = emoji;
         } else {
           emojiEl.textContent = '😐';
         }
